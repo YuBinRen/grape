@@ -69,7 +69,7 @@ class octetmath():
     def vectorVectorAddition(self, vec, target):
         for i in range(0, len(vec)):
             vec[i] = vec[i] ^ target[i]
-        return matrix
+        return vec
     def alphaToI(self, i):
        return self.exp[i]
 

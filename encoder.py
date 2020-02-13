@@ -6,7 +6,7 @@ import numpy as np
 from util import Search
 from scheme import V0, V1, V2, V3, OCT_EXP, OCT_LOG, f
 from phase1 import phase1
-
+from Encode import Encode1
 # 矩阵布局如下,除了HDPC部分外其余的元素只有0和1两种
 #             B          S        U        H
 # S  |-----LDPC1----|---I_S---|-----LDPC2------|
@@ -17,8 +17,15 @@ from phase1 import phase1
 class Encoder():
    def __init__(self, kitty, erasureRate, overhead, PAY_LEN=368):
         self.SourceSymbols, self.numPadding = databreaker(kitty, PAY_LEN)
+        self.datalen=len(kitty)
+        r,c=self.SourceSymbols.shape
+        self.SourceSymbols1=np.zeros((r,c),dtype=np.int)
+        for i in range(0,r):
+            for ii in range(0,c):
+                self.SourceSymbols1[i][ii]=self.SourceSymbols[i][ii]
         self.numSouceSymbols, self.ignore = self.SourceSymbols.shape
         self.numOfRepairSymbols = math.ceil(1 * erasureRate) + overhead
+        self.PAY_LEN=PAY_LEN
         self.RepairSymbols = np.zeros(
             (self.numOfRepairSymbols, PAY_LEN), dtype=np.int)
         k_prime, J, S, H, W = Search(self.numSouceSymbols)
@@ -56,22 +63,119 @@ class Encoder():
        return self.RepairSymbols
 
    def Encode(self):
-       SourceSymbols = self.SourceSymbols[self.S +
-                                          self.H: self.L - (self.K - self.numSouceSymbols), ]
-       temp = np.zeros((1, 368), dtype=np.int)
+       self.makeRepairSymbols()
+       SourceSymbols = self.SourceSymbols1[self.S +self.H: self.L - (self.K - self.numSouceSymbols), ]
+       temp = np.zeros((1, self.PAY_LEN), dtype=np.int)
        temp[0] = SourceSymbols[0]
        self.SourceSymbols = temp
 
+
+
+
    def Decode(self):
+
+      sb,s1=self.SourceSymbols.shape
+      b2=np.zeros((sb,s1),dtype=np.int)
+      for row1 in range(0,sb):
+            for col1 in range(0,s1):
+                b2[row1][col1]=self.SourceSymbols[row1][col1]  
+
       # 解码过程需要这么几个参数，这里不做模拟，写死了
-      ReceivedSymbols = np.zeros((1, 368), dtype=np.int)
+      self.matrix = np.zeros(
+          (self.B+self.S+self.U+self.H, self.H+self.S+self.K), dtype=np.int)
+      self.make_LDPC1()
+      self.make_identity()
+      self.make_LDPC2()
+      self.make_HDPC()
+      self.make_ENC()
       numSouceSymbols = 1
-      lossidxK = 1
-      RepairSymbolsReal = np.zeros((2, 368), dtype=np.int)
+      missIdx = [1]
+      RepairSymbolsReal = np.zeros((2, self.PAY_LEN), dtype=np.int)
       RepairSymbolsReal[0] = self.RepairSymbols[0]
       RepairSymbolsReal[1] = self.RepairSymbols[2]
       repairIdx = [0, 2]
-      padding = 361
+      padding = self.PAY_LEN-self.datalen
+      SourceSymbols =np.zeros((1,self.PAY_LEN),dtype=np.int)
+      temp=[]
+      
+      for i in range(0,self.PAY_LEN):
+          temp.append(0)
+    
+      for ii in range(0,self.K - numSouceSymbols):
+          SourceSymbols= np.row_stack((SourceSymbols, temp))
+      for i1 in range(0,self.S+self.H):
+         SourceSymbols= np.row_stack((SourceSymbols, temp))
+      mA=self.matrix.copy()
+
+
+      counter=0
+
+      for i2 in range(0,len(missIdx)):
+        idx = self.S + self.H + missIdx[i2]-1
+        yy=[]
+        for it in range(0,self.L):
+            yy.append(0)
+        mA[idx] =np.array(yy)
+        ix =self.params_get_idxs(self.K +  repairIdx[i2])
+        for i4 in range(0,len(ix)):
+
+            mA[idx][ix[i4]] = 1
+        counter = i2
+        SourceSymbols[idx] =self.RepairSymbols[i2]
+
+      b1=self.matrix
+
+  
+      self.matrix=mA
+      self.SourceSymbols=SourceSymbols
+      result=self.makeIntermediateSymbol()
+      ff,gg=result.shape
+      SourceSymbols = []
+      for i in range(0,self.K-1):
+
+        # 单纯的result矩阵的拷贝，作者使用了copy好像没有生效，先这样吧
+        temp=np.zeros((ff,gg),dtype=np.int)
+        for row in range(0,ff):
+            for col in range(0,gg):
+                temp[row][col]=result[row][col]       
+        g = self.TupleGenerator(i)
+        SourceSymbols.append(Encode1(temp,  g['d'], g['a'], g['b'], g['d1'], g['a1'], g['b1'], self.W, self.P, self.P1, self.octetmath,i))  
+      SourceSymbols=np.array(SourceSymbols)
+      wid, length = b2.shape
+      for row in range(0, wid):
+        for col in range(0,length):
+          if b2[row][col] != SourceSymbols[row][col]:
+             print("failed")
+             break
+  
+      w, l= SourceSymbols.shape
+      raptorq=[]
+      counter = 0
+      for n in range(0,w):
+         for nn in range(0,l):
+             counter=counter+1
+             raptorq.append(SourceSymbols[n][nn])
+             if(counter == self.datalen):
+               return raptorq
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
    def TupleGenerator(self, X):
         ret = {}
@@ -172,11 +276,14 @@ class Encoder():
            self.matrix[index][self.K+index] = 1
 
    def make_ENC(self):
+       temp=np.zeros((self.L,self.H+self.S+self.K),dtype=np.int)
        for row in range(self.S+self.H, self.L):
            isi = (row-self.S)-self.H
            idxs = self.params_get_idxs(isi)
            for col in range(0, len(idxs)):
                self.matrix[row][idxs[col]] = 1
+               temp[row-self.H-self.S][idxs[col]]=1
+       return temp
 
 
 def rnd_get(y, i, m):
